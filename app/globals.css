@@ -1,0 +1,103 @@
+:root {
+  --color-primary: #c8922a;
+  --color-primary-hover: #d4a017;
+  --color-primary-glow: #c8922a40;
+  --color-bg: #1a1510;
+  --color-surface: #2a231c;
+  --color-surface-alt: #352e26;
+  --color-surface-raised: #403830;
+  --color-text: #faf8f4;
+  --color-text-muted: #a09080;
+  --color-text-faint: #6a5a4a;
+  --color-border: #3d352c;
+  --color-ai-bubble: #2a231c;
+  --color-human-bubble: #c8922a18;
+  --color-recording: #e05555;
+  --color-tts-playing: #55aa77;
+  --font-size-xs: 11px;
+  --font-size-sm: 13px;
+  --font-size-base: 16px;
+  --font-size-lg: 18px;
+  --font-size-xl: 22px;
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-xl: 28px;
+  --radius-full: 9999px;
+  --shadow-bubble: 0 2px 8px rgba(0,0,0,0.3);
+  --shadow-button: 0 4px 16px rgba(200,146,42,0.3);
+  --transition-fast: 150ms ease;
+  --transition-normal: 250ms ease;
+}
+
+[data-theme="light"] {
+  --color-primary: #c8922a;
+  --color-primary-hover: #b07820;
+  --color-primary-glow: #c8922a30;
+  --color-bg: #faf8f4;
+  --color-surface: #f0ece4;
+  --color-surface-alt: #e8e2d8;
+  --color-surface-raised: #ffffff;
+  --color-text: #1a1510;
+  --color-text-muted: #7a6a5a;
+  --color-text-faint: #a09080;
+  --color-border: #d8d0c4;
+  --color-ai-bubble: #f0ece4;
+  --color-human-bubble: #c8922a15;
+  --shadow-bubble: 0 2px 8px rgba(0,0,0,0.08);
+  --shadow-button: 0 4px 16px rgba(200,146,42,0.2);
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: var(--font-size-base);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button {
+  cursor: pointer;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+}
+
+input, textarea {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  outline: none;
+}
+
+::-webkit-scrollbar {
+  width: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 4px;
+}
+
+::selection {
+  background: var(--color-primary-glow);
+}

@@ -1,0 +1,9 @@
+node_modules/
+.next/
+.env
+*.log
+.DS_Store
+._*
+cloudflared
+tunnel.log
+.env.local
