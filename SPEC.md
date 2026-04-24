@@ -284,3 +284,23 @@ XAI_CHAT_URL=https://api.x.ai/v1/chat/completions
 - [ ] Sounds play on send/receive
 - [ ] Dark amber theme applied
 - [ ] No crashes, no 500 errors on core flow
+
+---
+
+## 11. Known Issues
+
+### iOS Safari Voice Recording
+iOS Safari's MediaRecorder may not capture valid audio. Symptoms: mic permission granted, "Recording..." shows, but no audio sent to server → Kai shows "Error: No audio" or "Error: Request failed".
+
+**Workaround**: Use text input (`Aa` button) — fully functional.
+
+**Status**: Root cause investigation ongoing. Server-side STT pipeline verified working with WAV input. Client-side MediaRecorder on iOS Safari is the likely failure point.
+
+## 12. Cloudflare Tunnel
+
+Quick tunnel URL (ephemeral, changes on restart):
+```
+https://occurs-strange-sri-handle.trycloudflare.com/channel
+```
+
+Permanent tunnel: requires free Cloudflare account + named tunnel. Run `./start-tunnel.sh` to restart.
