@@ -2,6 +2,7 @@ export interface Message {
   id: string;
   role: "human" | "ai";
   body: string;
+  transcript?: string; // Rod's original voice transcript
   audioUrl?: string;
   createdAt: string;
 }

@@ -14,6 +14,37 @@ function sseData(data: unknown): Uint8Array {
   return encoder.encode(`data: ${JSON.stringify(data)}\n\n`);
 }
 
+type ConversationHistoryItem = {
+  role: "human" | "ai";
+  body: string;
+  createdAt?: string;
+};
+
+function parseConversationHistory(value: FormDataEntryValue | null): ConversationHistoryItem[] {
+  if (typeof value !== "string" || !value.trim()) return [];
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+
+    return parsed
+      .filter((item): item is ConversationHistoryItem => {
+        if (!item || typeof item !== "object") return false;
+        const candidate = item as Partial<ConversationHistoryItem>;
+        return (candidate.role === "human" || candidate.role === "ai") && typeof candidate.body === "string";
+      })
+      .map((item) => ({
+        role: item.role,
+        body: item.body.trim(),
+        createdAt: typeof item.createdAt === "string" ? item.createdAt : undefined,
+      }))
+      .filter((item) => item.body.length > 0)
+      .slice(-20);
+  } catch {
+    return [];
+  }
+}
+
 export async function POST(req: NextRequest) {
   const authHeader = req.headers.get("Authorization");
   const token = authHeader?.replace("Bearer ", "");
@@ -36,6 +67,7 @@ export async function POST(req: NextRequest) {
         const audioBlob = formData.get("audio") as Blob | null;
         const textInput = formData.get("text") as string | null;
         const voice = (formData.get("voice") as string | null) || undefined;
+        const conversationHistory = parseConversationHistory(formData.get("conversationHistory"));
 
         let userMessage = "";
 
@@ -68,6 +100,7 @@ export async function POST(req: NextRequest) {
           humanMessage: userMessage,
           userName: "Rod",
           continuitySummaries: [],
+          conversationHistory,
         });
 
         send(sseEvent("response", { text: reply }));

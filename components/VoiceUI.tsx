@@ -11,6 +11,37 @@ import TextComposer from "./TextComposer";
 import AudioIndicator from "./AudioIndicator";
 
 const BASE = process.env.NEXT_PUBLIC_VOICE_URL || "";
+const SESSION_TIMEOUT_MS = 30 * 60 * 1000;
+
+type ConversationHistoryItem = {
+  role: "human" | "ai";
+  body: string;
+  createdAt: string;
+};
+
+function formatConversationTimestamp(date: Date) {
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const dd = String(date.getDate()).padStart(2, "0");
+  const hh = String(date.getHours()).padStart(2, "0");
+  const min = String(date.getMinutes()).padStart(2, "0");
+  const ss = String(date.getSeconds()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}-${hh}${min}${ss}`;
+}
+
+function getMessageText(message: Message) {
+  return message.transcript || message.body;
+}
+
+function toConversationHistory(messages: Message[]): ConversationHistoryItem[] {
+  return messages
+    .filter((message) => getMessageText(message).trim())
+    .map((message) => ({
+      role: message.role,
+      body: getMessageText(message),
+      createdAt: message.createdAt,
+    }));
+}
 
 function formatTime(date: Date) {
   return date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
@@ -28,6 +59,8 @@ export default function VoiceUI() {
   const [token, setToken] = useState<string>("");
   const feedRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const messagesRef = useRef<Message[]>([]);
+  const lastActivityRef = useRef<number>(Date.now());
 
   // Load theme + token
   useEffect(() => {
@@ -62,6 +95,11 @@ export default function VoiceUI() {
     };
   }, []);
 
+  // Keep a synchronous copy of messages for request payloads and downloads.
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
   // Scroll to bottom on new messages
   useEffect(() => {
     const el = feedRef.current;
@@ -73,16 +111,87 @@ export default function VoiceUI() {
     transcriptRef.current = transcript;
   }, [transcript]);
 
+  const getActiveSessionMessages = useCallback(() => {
+    const now = Date.now();
+    if (now - lastActivityRef.current > SESSION_TIMEOUT_MS) {
+      messagesRef.current = [];
+      setMessages([]);
+    }
+    lastActivityRef.current = now;
+    return messagesRef.current;
+  }, []);
+
+  const appendMessage = useCallback((message: Message) => {
+    setMessages((current) => {
+      const next = [...current, message];
+      messagesRef.current = next;
+      return next;
+    });
+    lastActivityRef.current = Date.now();
+  }, []);
+
+  const replaceMessage = useCallback((messageId: string, updater: (message: Message) => Message) => {
+    setMessages((current) => {
+      const next = current.map((message) => (message.id === messageId ? updater(message) : message));
+      messagesRef.current = next;
+      return next;
+    });
+    lastActivityRef.current = Date.now();
+  }, []);
+
+  const appendConversationHistory = useCallback((fd: FormData, nextMessages: Message[]) => {
+    fd.append("conversationHistory", JSON.stringify(toConversationHistory(nextMessages)));
+  }, []);
+
+  const clearConversation = useCallback(() => {
+    stopAudio();
+    if (abortRef.current) abortRef.current.abort();
+    messagesRef.current = [];
+    setMessages([]);
+    setTranscript("");
+    setIsThinking(false);
+    setTtsPlaying(false);
+    lastActivityRef.current = Date.now();
+  }, []);
+
+  const saveConversation = useCallback(() => {
+    const currentMessages = messagesRef.current;
+    if (currentMessages.length === 0) return;
+
+    const now = new Date();
+    const title = `Kai Channel Conversation - ${now.toLocaleString("en-US")}`;
+    const lines = [
+      `# ${title}`,
+      "",
+      ...currentMessages.flatMap((message) => {
+        const speaker = message.role === "human" ? "Rod" : "Kai";
+        const timestamp = new Date(message.createdAt).toLocaleString("en-US");
+        return [`## ${speaker} - ${timestamp}`, "", getMessageText(message), ""];
+      }),
+    ];
+
+    const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `conversation-${formatConversationTimestamp(now)}.md`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }, []);
+
   const sendEvent = useCallback((text: string) => {
     if (!text.trim()) return;
 
+    const previousMessages = getActiveSessionMessages();
     const humanMsg: Message = {
       id: `human-${Date.now()}`,
       role: "human",
       body: text,
       createdAt: new Date().toISOString(),
     };
-    setMessages((m) => [...m, humanMsg]);
+    appendMessage(humanMsg);
     setIsThinking(true);
     setTranscript("");
     playSendSound();
@@ -94,6 +203,7 @@ export default function VoiceUI() {
     const token = localStorage.getItem("kai-voice-token") || "";
     const fd = new FormData();
     fd.append("text", text);
+    appendConversationHistory(fd, previousMessages);
     fetch(`${BASE}/api/voice/message`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
@@ -128,6 +238,11 @@ export default function VoiceUI() {
             if (msg.transcript && msg.transcript.text) {
               console.log("[voice] transcript received:", msg.transcript.text);
               setTranscript(msg.transcript.text);
+              replaceMessage(humanMsg.id, (message) => ({
+                ...message,
+                body: msg.transcript.text,
+                transcript: msg.transcript.text,
+              }));
             }
             if (msg.audio) {
               console.log("[voice] audio event received, base64 length:", msg.audio.base64.length, "contentType:", msg.audio.contentType);
@@ -146,7 +261,7 @@ export default function VoiceUI() {
             body: lastResponse,
             createdAt: new Date().toISOString(),
           };
-          setMessages((m) => [...m, aiMsg]);
+          appendMessage(aiMsg);
           console.log("[voice] AI message added to chat, body:", aiMsg.body.substring(0, 80));
           playReceiveSound();
         } else if (errorMsg) {
@@ -156,7 +271,7 @@ export default function VoiceUI() {
             body: `Error: ${errorMsg}`,
             createdAt: new Date().toISOString(),
           };
-          setMessages((m) => [...m, aiMsg]);
+          appendMessage(aiMsg);
         }
       })
       .catch((e) => {
@@ -168,14 +283,14 @@ export default function VoiceUI() {
           body: `Error: ${e.message || "Request failed"}`,
           createdAt: new Date().toISOString(),
         };
-        setMessages((m) => [...m, aiMsg]);
+        appendMessage(aiMsg);
         playReceiveSound();
       })
       .finally(() => {
         setIsThinking(false);
         setTtsPlaying(false);
       });
-  }, []);
+  }, [appendConversationHistory, appendMessage, getActiveSessionMessages, replaceMessage]);
 
   const sendAudio = useCallback(async () => {
     const blob = await stopRecording();
@@ -192,13 +307,14 @@ export default function VoiceUI() {
     setRecording(false);
     setIsThinking(true);
 
+    const previousMessages = getActiveSessionMessages();
     const humanMsg: Message = {
       id: `human-${Date.now()}`,
       role: "human",
       body: transcriptRef.current || "🎤 Voice message",
       createdAt: new Date().toISOString(),
     };
-    setMessages((m) => [...m, humanMsg]);
+    appendMessage(humanMsg);
     setTranscript("");
     playSendSound();
 
@@ -207,8 +323,11 @@ export default function VoiceUI() {
 
     const token = localStorage.getItem("kai-voice-token") || "";
     const fd = new FormData();
-    const ext = blob.type.includes("mp4") || blob.type.includes("mpeg") ? "m4a" : "webm";
-    fd.append("audio", blob, `recording.${ext}`);
+    // Determine correct file extension from blob MIME type.
+    // Safari/iOS record as audio/mp4 (m4a container). Chromium records as audio/webm.
+    const isMp4 = blob.type.includes("mp4") || blob.type.includes("mpeg");
+    fd.append("audio", blob, `recording.${isMp4 ? "m4a" : "webm"}`);
+    appendConversationHistory(fd, previousMessages);
 
     fetch(`${BASE}/api/voice/message`, {
       method: "POST",
@@ -243,6 +362,11 @@ export default function VoiceUI() {
             if (msg.transcript && msg.transcript.text) {
               console.log("[voice] transcript received:", msg.transcript.text);
               setTranscript(msg.transcript.text);
+              replaceMessage(humanMsg.id, (message) => ({
+                ...message,
+                body: msg.transcript.text,
+                transcript: msg.transcript.text,
+              }));
             }
             if (msg.audio) {
               console.log("[voice] audio event received, base64 length:", msg.audio.base64.length, "contentType:", msg.audio.contentType);
@@ -263,7 +387,7 @@ export default function VoiceUI() {
             body: lastResponse,
             createdAt: new Date().toISOString(),
           };
-          setMessages((m) => [...m, aiMsg]);
+          appendMessage(aiMsg);
           console.log("[voice] AI message added to chat, body:", aiMsg.body.substring(0, 80));
           playReceiveSound();
         } else if (errorMsg) {
@@ -273,7 +397,7 @@ export default function VoiceUI() {
             body: `Error: ${errorMsg}`,
             createdAt: new Date().toISOString(),
           };
-          setMessages((m) => [...m, aiMsg]);
+          appendMessage(aiMsg);
         }
       })
       .catch((e) => {
@@ -284,7 +408,7 @@ export default function VoiceUI() {
         setIsThinking(false);
         setTtsPlaying(false);
       });
-  }, [transcript]);
+  }, [appendConversationHistory, appendMessage, getActiveSessionMessages, replaceMessage]);
 
   const handleHoldStart = useCallback(() => {
     setRecording(true);
@@ -299,10 +423,10 @@ export default function VoiceUI() {
         body: `Mic error: ${message}`,
         createdAt: new Date().toISOString(),
       };
-      setMessages((m) => [...m, aiMsg]);
+      appendMessage(aiMsg);
       setTextMode(true);
     });
-  }, []);
+  }, [appendMessage]);
 
   const handleHoldEnd = useCallback(() => {
     if (!isRecording()) return;
@@ -329,6 +453,12 @@ export default function VoiceUI() {
           <span className="kai-name">Kai Channel</span>
         </div>
         <div className="header-right">
+          <button className="text-btn" onClick={saveConversation} disabled={messages.length === 0} aria-label="Save conversation">
+            Save conversation
+          </button>
+          <button className="text-btn" onClick={clearConversation} disabled={messages.length === 0 && !isThinking} aria-label="Clear conversation">
+            Clear
+          </button>
           <button className="icon-btn" onClick={toggleTheme} aria-label="Toggle theme">
             {theme === "dark" ? "☀️" : "🌙"}
           </button>
@@ -439,6 +569,28 @@ export default function VoiceUI() {
           display: flex;
           align-items: center;
           gap: 8px;
+        }
+
+        .text-btn {
+          min-height: 36px;
+          padding: 0 12px;
+          border-radius: var(--radius-full);
+          font-size: var(--font-size-xs);
+          font-weight: 700;
+          background: var(--color-surface-raised);
+          color: var(--color-text);
+          border: 1px solid var(--color-border);
+          transition: opacity var(--transition-fast), background var(--transition-fast);
+        }
+
+        .text-btn:hover:not(:disabled) {
+          background: var(--color-primary);
+          color: #1a1510;
+        }
+
+        .text-btn:disabled {
+          cursor: not-allowed;
+          opacity: 0.45;
         }
 
         .icon-btn {

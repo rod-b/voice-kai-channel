@@ -12,13 +12,14 @@ interface Props {
 
 export default function MessageBubble({ message, showAvatar }: Props) {
   const isAi = message.role === "ai";
+  const body = message.transcript || message.body;
 
   return (
     <div className={`bubble-row ${isAi ? "ai" : "human"}`}>
       {showAvatar && <span className="avatar">{isAi ? "🐅" : ""}</span>}
       <div className="bubble-content">
         <div className="bubble">
-          <p>{message.body}</p>
+          <p>{body}</p>
         </div>
         <span className="time">{formatTime(message.createdAt)}</span>
       </div>

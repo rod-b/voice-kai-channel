@@ -15,13 +15,27 @@ Do not mention that you're an AI or reference technology stacks unless he asks d
 export async function getAiReply({
   humanMessage,
   userName,
+  conversationHistory = [],
 }: {
   humanMessage: string;
   userName?: string;
+  conversationHistory?: Array<{
+    role: "human" | "ai";
+    body: string;
+    createdAt?: string;
+  }>;
 }): Promise<string> {
   const config = getXaiConfig();
 
   try {
+    const historyMessages = conversationHistory
+      .filter((message) => message.body.trim())
+      .slice(-20)
+      .map((message) => ({
+        role: message.role === "ai" ? "assistant" : "user",
+        content: message.body,
+      }));
+
     const response = await xaiFetch("/v1/chat/completions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -29,6 +43,7 @@ export async function getAiReply({
         model: "grok-3-mini",
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
+          ...historyMessages,
           { role: "user", content: humanMessage },
         ],
         max_tokens: 600,
