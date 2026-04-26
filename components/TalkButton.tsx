@@ -62,7 +62,7 @@ export default function TalkButton({ recording, onHoldStart, onHoldEnd }: Props)
         <div className="talk-btn-inner">
           <span className="mic-icon">{recording ? "🔴" : "🎤"}</span>
           <span className="talk-label">
-            {recording ? "SENDING..." : "TALK"}
+            {recording ? "REC..." : "TALK"}
           </span>
         </div>
         {recording && <div className="pulse-ring" />}

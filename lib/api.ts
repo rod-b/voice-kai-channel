@@ -1,4 +1,4 @@
-const BASE = process.env.NEXT_PUBLIC_VOICE_URL || "http://localhost:3005";
+const BASE = process.env.NEXT_PUBLIC_VOICE_URL || "";
 
 export async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const token = typeof window !== "undefined" ? localStorage.getItem("kai-voice-token") : null;

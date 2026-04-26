@@ -42,9 +42,14 @@ export async function POST(req: NextRequest) {
         // STT if audio provided
         if (audioBlob && audioBlob.size > 0) {
           send(sseEvent("status", { text: "🎙️ Transcribing..." }));
-          const text = await transcribeAudio(audioBlob, "audio.webm");
-          userMessage = text;
-          send(sseEvent("transcript", { text }));
+          const fileName = audioBlob instanceof File && audioBlob.name
+            ? audioBlob.name
+            : audioBlob.type.includes("mp4") || audioBlob.type.includes("mpeg") || audioBlob.type.includes("aac")
+              ? "audio.m4a"
+              : "audio.webm";
+          const transcript = await transcribeAudio(audioBlob, fileName);
+          userMessage = typeof transcript === "string" ? transcript : transcript.text;
+          send(sseEvent("transcript", { text: userMessage }));
         } else if (textInput) {
           userMessage = textInput.trim();
         }

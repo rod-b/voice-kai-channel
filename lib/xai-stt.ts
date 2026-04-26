@@ -1,6 +1,6 @@
 import { getXaiConfig, xaiFetch } from "@/lib/xai-client";
 
-export async function transcribeAudio(file: Blob, filename = "audio.webm") {
+export async function transcribeAudio(file: Blob, filename = "audio.webm"): Promise<{ text: string; duration?: number; language?: string; stub?: boolean }> {
   const config = getXaiConfig();
 
   if (config.stubsEnabled && !config.apiKey) {

@@ -1,9 +1,11 @@
 // Web Audio API sound effects — no files needed
-
+// Single shared AudioContext so Safari's autoplay unlock on first user click
+// propagates to all audio playback in the app.
 let ctx: AudioContext | null = null;
 
-function getCtx(): AudioContext {
+export function getCtx(): AudioContext {
   if (!ctx) ctx = new AudioContext();
+  if (ctx.state === "suspended") ctx.resume().catch(() => {});
   return ctx;
 }
 
@@ -42,6 +44,7 @@ export function playReceiveSound() {
 }
 
 let currentAudio: HTMLAudioElement | null = null;
+let activeSource: AudioBufferSourceNode | null = null;
 
 export function playBase64Audio(base64: string, contentType: string) {
   try {
@@ -49,20 +52,64 @@ export function playBase64Audio(base64: string, contentType: string) {
       currentAudio.pause();
       currentAudio = null;
     }
+    if (activeSource) {
+      try { activeSource.stop(); } catch {}
+      activeSource = null;
+    }
     const data = `data:${contentType};base64,${base64}`;
     const audio = new Audio(data);
     currentAudio = audio;
-    audio.play().catch(console.error);
+
+    // First try: HTMLAudioElement (works in most browsers)
+    const playPromise = audio.play();
+    if (playPromise !== undefined) {
+      playPromise.then(() => {
+        // HTMLAudioElement playback succeeded
+      }).catch((e) => {
+        console.warn("[audio] HTMLAudioElement play blocked, trying Web Audio API:", e);
+        // Fallback: decode and play via Web Audio API
+        tryDecodeAndPlay(base64, contentType);
+      });
+    }
     return audio;
   } catch (e) {
-    console.error(e);
+    console.error("[audio] playBase64Audio error:", e);
     return null;
   }
+}
+
+function tryDecodeAndPlay(base64: string, contentType: string) {
+  const c = getCtx();
+  if (c.state === "suspended") {
+    c.resume().then(() => decodeAndPlay(base64, contentType, c)).catch(() => {});
+  } else {
+    decodeAndPlay(base64, contentType, c);
+  }
+}
+
+function decodeAndPlay(base64: string, contentType: string, ctx: AudioContext) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  ctx.decodeAudioData(bytes.buffer, (buffer) => {
+    if (activeSource) { try { activeSource.stop(); } catch {} }
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(ctx.destination);
+    source.start(0);
+    activeSource = source;
+  }, (e) => {
+    console.error("[audio] decodeAudioData failed:", e);
+  });
 }
 
 export function stopAudio() {
   if (currentAudio) {
     currentAudio.pause();
     currentAudio = null;
+  }
+  if (activeSource) {
+    try { activeSource.stop(); } catch {}
+    activeSource = null;
   }
 }

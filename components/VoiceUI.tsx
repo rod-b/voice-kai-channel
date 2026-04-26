@@ -4,13 +4,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Message } from "@/lib/types";
 import { getOrCreateToken } from "@/lib/tokens";
 import { startRecording, stopRecording, isRecording } from "@/lib/audio";
-import { playSendSound, playReceiveSound, playBase64Audio, stopAudio } from "@/lib/sounds";
+import { playSendSound, playReceiveSound, playBase64Audio, stopAudio, getCtx } from "@/lib/sounds";
 import MessageBubble from "./MessageBubble";
 import TalkButton from "./TalkButton";
 import TextComposer from "./TextComposer";
 import AudioIndicator from "./AudioIndicator";
 
-const BASE = process.env.NEXT_PUBLIC_VOICE_URL || "http://localhost:3005";
+const BASE = process.env.NEXT_PUBLIC_VOICE_URL || "";
 
 function formatTime(date: Date) {
   return date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
@@ -24,6 +24,7 @@ export default function VoiceUI() {
   const [textMode, setTextMode] = useState(false);
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [transcript, setTranscript] = useState("");
+  const transcriptRef = useRef(""); // always fresh, avoids stale closure in sendAudio
   const [token, setToken] = useState<string>("");
   const feedRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -41,11 +42,36 @@ export default function VoiceUI() {
     localStorage.setItem("kai-theme", theme);
   }, [theme]);
 
+  // Unlock AudioContext on first user interaction — required for Safari autoplay policy.
+  // Safari suspends all AudioContext until a user gesture occurs.
+  // We use the shared getCtx() so this resume propagates to all audio playback.
+  useEffect(() => {
+    const unlock = () => {
+      try {
+        const c = getCtx();
+        if (c.state === "suspended") {
+          c.resume().catch(() => {});
+        }
+      } catch {}
+    };
+    document.addEventListener("click", unlock, { once: true });
+    document.addEventListener("touchstart", unlock, { once: true });
+    return () => {
+      document.removeEventListener("click", unlock);
+      document.removeEventListener("touchstart", unlock);
+    };
+  }, []);
+
   // Scroll to bottom on new messages
   useEffect(() => {
     const el = feedRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages]);
+
+  // Keep transcriptRef in sync so sendAudio can read the current value
+  useEffect(() => {
+    transcriptRef.current = transcript;
+  }, [transcript]);
 
   const sendEvent = useCallback((text: string) => {
     if (!text.trim()) return;
@@ -83,22 +109,36 @@ export default function VoiceUI() {
         const lines = text.split("\n");
         let lastResponse = "";
         let errorMsg = "";
+        let currentEvent = "";
         for (const line of lines) {
-          if (line.startsWith("event:")) continue;
+          if (line.startsWith("event:")) {
+            currentEvent = line.slice(6).trim();
+            console.log("[voice] SSE event:", currentEvent);
+            continue;
+          }
           if (!line.startsWith("data:")) continue;
           const raw = line.slice(5).trim();
           if (!raw) continue;
           try {
             const msg = JSON.parse(raw);
-            if (msg.type === "response_start" || msg.type === "done") continue;
-            if (msg.text && typeof msg.text === "string") lastResponse = msg.text;
-            if (msg.message) errorMsg = msg.message;
-            if (msg.transcript && msg.transcript.text) setTranscript(msg.transcript.text);
-            if (msg.audio) {
-              playBase64Audio(msg.audio.base64, msg.audio.contentType);
+            console.log("[voice] SSE data:", JSON.stringify(msg).substring(0, 100), "event=", currentEvent);
+            if (msg.type === "response_start" || msg.type === "done") { currentEvent = ""; continue; }
+            if (currentEvent === "response" && msg.text) lastResponse = msg.text;
+            else if (currentEvent === "error" && msg.message) errorMsg = msg.message;
+            if (msg.transcript && msg.transcript.text) {
+              console.log("[voice] transcript received:", msg.transcript.text);
+              setTranscript(msg.transcript.text);
             }
-          } catch {}
+            if (msg.audio) {
+              console.log("[voice] audio event received, base64 length:", msg.audio.base64.length, "contentType:", msg.audio.contentType);
+              playBase64Audio(msg.audio.base64, msg.audio.contentType);
+            } else if (msg.base64 && msg.contentType) {
+              playBase64Audio(msg.base64, msg.contentType);
+            }
+            currentEvent = "";
+          } catch { currentEvent = ""; }
         }
+        console.log("[voice] SSE parsed: lastResponse=", JSON.stringify(lastResponse), "errorMsg=", errorMsg);
         if (lastResponse) {
           const aiMsg: Message = {
             id: `ai-${Date.now()}`,
@@ -107,6 +147,7 @@ export default function VoiceUI() {
             createdAt: new Date().toISOString(),
           };
           setMessages((m) => [...m, aiMsg]);
+          console.log("[voice] AI message added to chat, body:", aiMsg.body.substring(0, 80));
           playReceiveSound();
         } else if (errorMsg) {
           const aiMsg: Message = {
@@ -154,7 +195,7 @@ export default function VoiceUI() {
     const humanMsg: Message = {
       id: `human-${Date.now()}`,
       role: "human",
-      body: transcript || "🎤 Voice message",
+      body: transcriptRef.current || "🎤 Voice message",
       createdAt: new Date().toISOString(),
     };
     setMessages((m) => [...m, humanMsg]);
@@ -183,24 +224,38 @@ export default function VoiceUI() {
         const lines = text.split("\n");
         let lastResponse = "";
         let errorMsg = "";
-        let thinkingMsg = "";
+        let currentEvent = "";
         for (const line of lines) {
-          if (line.startsWith("event:")) continue;
+          if (line.startsWith("event:")) {
+            currentEvent = line.slice(6).trim();
+            console.log("[voice] SSE event:", currentEvent);
+            continue;
+          }
           if (!line.startsWith("data:")) continue;
           const raw = line.slice(5).trim();
           if (!raw) continue;
           try {
             const msg = JSON.parse(raw);
-            if (msg.type === "response_start" || msg.type === "done") continue;
-            if (msg.text && typeof msg.text === "string") lastResponse = msg.text;
-            if (msg.message) errorMsg = msg.message;
-            if (msg.transcript && msg.transcript.text) setTranscript(msg.transcript.text);
+            console.log("[voice] SSE data:", JSON.stringify(msg).substring(0, 100), "event=", currentEvent);
+            if (msg.type === "response_start" || msg.type === "done") { currentEvent = ""; continue; }
+            if (currentEvent === "response" && msg.text) lastResponse = msg.text;
+            else if (currentEvent === "error" && msg.message) errorMsg = msg.message;
+            if (msg.transcript && msg.transcript.text) {
+              console.log("[voice] transcript received:", msg.transcript.text);
+              setTranscript(msg.transcript.text);
+            }
             if (msg.audio) {
+              console.log("[voice] audio event received, base64 length:", msg.audio.base64.length, "contentType:", msg.audio.contentType);
               playBase64Audio(msg.audio.base64, msg.audio.contentType);
               setTtsPlaying(true);
+            } else if (msg.base64 && msg.contentType) {
+              playBase64Audio(msg.base64, msg.contentType);
+              setTtsPlaying(true);
             }
-          } catch {}
+            currentEvent = "";
+          } catch { currentEvent = ""; }
         }
+        console.log("[voice] SSE parsed: lastResponse=", JSON.stringify(lastResponse), "errorMsg=", errorMsg);
         if (lastResponse) {
           const aiMsg: Message = {
             id: `ai-${Date.now()}`,
@@ -209,6 +264,7 @@ export default function VoiceUI() {
             createdAt: new Date().toISOString(),
           };
           setMessages((m) => [...m, aiMsg]);
+          console.log("[voice] AI message added to chat, body:", aiMsg.body.substring(0, 80));
           playReceiveSound();
         } else if (errorMsg) {
           const aiMsg: Message = {
@@ -236,6 +292,15 @@ export default function VoiceUI() {
     startRecording().catch((err) => {
       console.error("Mic error:", err);
       setRecording(false);
+      const message = err instanceof Error ? err.message : "Microphone failed to start.";
+      const aiMsg: Message = {
+        id: `ai-${Date.now()}`,
+        role: "ai",
+        body: `Mic error: ${message}`,
+        createdAt: new Date().toISOString(),
+      };
+      setMessages((m) => [...m, aiMsg]);
+      setTextMode(true);
     });
   }, []);
 
@@ -274,9 +339,8 @@ export default function VoiceUI() {
       <div className="feed" ref={feedRef}>
         {messages.length === 0 && (
           <div className="feed-empty">
-            <div className="feed-empty-avatar">🐅</div>
-            <p>Hey Rod, ready when you are.</p>
-            <p>Hold the mic and talk, or type a message below.</p>
+            <p className="feed-empty-title">Kai Channel</p>
+            <p className="feed-empty-hint">Hold the mic to talk, or tap Aa to type</p>
           </div>
         )}
         {messages.map((msg) => (
@@ -301,38 +365,47 @@ export default function VoiceUI() {
         )}
       </div>
 
-      {/* Audio Indicator */}
-      <AudioIndicator recording={recording} ttsPlaying={ttsPlaying} />
+      {/* Bottom Control Band - 55% dark overlay */}
+      <div className="bottom-bar">
+        {/* Top row: hint + Aa + TALK */}
+        <div className="bottom-bar-top">
+          <span className="bottom-bar-hint">
+            <span className="bottom-bar-hint-brand">Kai Channel</span>
+            <span className="bottom-bar-hint-sep"> · </span>
+            <span className="bottom-bar-hint-text">Hold mic to talk · tap Aa to type</span>
+          </span>
+          <div className="bottom-bar-top-actions">
+            <button
+              className={`text-toggle ${textMode ? "active" : ""}`}
+              onClick={() => setTextMode((m) => !m)}
+              aria-label="Toggle text input"
+            >
+              Aa
+            </button>
+            <TalkButton
+              recording={recording}
+              onHoldStart={handleHoldStart}
+              onHoldEnd={handleHoldEnd}
+            />
+          </div>
+        </div>
 
-      {/* Bottom Controls */}
-      <div className="controls">
-        <TalkButton
-          recording={recording}
-          onHoldStart={handleHoldStart}
-          onHoldEnd={handleHoldEnd}
-        />
-        <button
-          className={`text-toggle ${textMode ? "active" : ""}`}
-          onClick={() => setTextMode((m) => !m)}
-          aria-label="Toggle text input"
-        >
-          Aa
-        </button>
+        {/* Bottom row: text input (shown only when textMode is true) */}
+        <div className="bottom-bar-input-row" style={{ display: textMode ? 'flex' : 'none' }}>
+            <TextComposer onSubmit={handleTextSubmit} disabled={isThinking} />
+        </div>
       </div>
-
-      {/* Text Composer */}
-      {textMode && (
-        <TextComposer onSubmit={handleTextSubmit} disabled={isThinking} />
-      )}
 
       <style>{`
         .voice-ui {
           display: flex;
           flex-direction: column;
           height: 100dvh;
-          background: var(--color-bg);
+          background: transparent;
           overflow: hidden;
         }
+
+
 
         .header {
           display: flex;
@@ -376,7 +449,7 @@ export default function VoiceUI() {
           align-items: center;
           justify-content: center;
           font-size: 18px;
-          background: var(--color-surface-alt);
+          background: transparent;
           transition: background var(--transition-fast);
         }
 
@@ -388,32 +461,25 @@ export default function VoiceUI() {
           flex: 1;
           overflow-y: auto;
           padding: 16px 12px;
+          padding-bottom: 12px;
           display: flex;
           flex-direction: column;
           gap: 8px;
+          background: transparent;
         }
 
-        .feed-empty {
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          justify-content: center;
-          height: 100%;
-          gap: 12px;
-          color: var(--color-text-muted);
-          text-align: center;
-          padding: 40px 20px;
+
+
+        .feed-empty-title {
+          font-size: 15px;
+          font-weight: 500;
+          color: rgba(200, 146, 42, 0.7);
         }
 
-        .feed-empty-avatar {
-          font-size: 56px;
-          margin-bottom: 8px;
-        }
-
-        .feed-empty p {
-          font-size: var(--font-size-base);
-          line-height: 1.6;
-          max-width: 280px;
+        .feed-empty-hint {
+          font-size: var(--font-size-xs);
+          line-height: 1.4;
+          color: rgba(160, 144, 128, 0.5);
         }
 
         .feed-live-transcript {
@@ -457,26 +523,16 @@ export default function VoiceUI() {
         .thinking-dots span:nth-child(2) { animation-delay: 0.15s; }
         .thinking-dots span:nth-child(3) { animation-delay: 0.3s; }
 
-        .controls {
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          gap: 20px;
-          padding: 12px 20px;
-          padding-bottom: max(12px, env(safe-area-inset-bottom));
-          background: var(--color-surface);
-          border-top: 1px solid var(--color-border);
-          flex-shrink: 0;
-        }
+
 
         .text-toggle {
-          width: 48px;
-          height: 48px;
+          width: 44px;
+          height: 44px;
           border-radius: var(--radius-full);
-          background: var(--color-surface-alt);
-          font-size: 16px;
+          background: var(--color-primary);
+          font-size: 14px;
           font-weight: 700;
-          color: var(--color-text-muted);
+          color: #1a1510;
           display: flex;
           align-items: center;
           justify-content: center;
@@ -484,10 +540,8 @@ export default function VoiceUI() {
           flex-shrink: 0;
         }
 
-        .text-toggle.active,
         .text-toggle:hover {
-          background: var(--color-primary);
-          color: var(--color-bg);
+          background: var(--color-primary-hover);
         }
 
         @keyframes fadeIn {
@@ -499,6 +553,80 @@ export default function VoiceUI() {
           0%, 100% { opacity: 1; }
           50% { opacity: 0.3; }
         }
+
+
+        .bottom-bar {
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+          padding: 12px 20px 14px;
+          padding-bottom: max(14px, env(safe-area-inset-bottom));
+          background: rgba(10, 8, 6, 0.55);
+          backdrop-filter: blur(16px);
+          -webkit-backdrop-filter: blur(16px);
+          border-top: 1px solid rgba(61, 53, 44, 0.5);
+          flex-shrink: 0;
+          width: 100%;
+          box-sizing: border-box;
+        }
+
+        .bottom-bar-top {
+          display: flex;
+          align-items: center;
+          width: 100%;
+          box-sizing: border-box;
+          gap: 10px;
+        }
+
+        .bottom-bar-hint {
+          flex: 1;
+          font-size: 12px;
+          color: rgba(250, 248, 244, 0.8);
+          display: flex;
+          align-items: center;
+          gap: 0;
+          overflow: hidden;
+          white-space: nowrap;
+          min-width: 0;
+        }
+
+        .bottom-bar-hint-brand {
+          color: var(--color-primary);
+          font-weight: 600;
+          text-decoration: underline;
+          text-underline-offset: 2px;
+        }
+
+        .bottom-bar-hint-sep {
+          color: rgba(250, 248, 244, 0.5);
+          margin: 0 3px;
+        }
+
+        .bottom-bar-hint-text {
+          color: rgba(250, 248, 244, 0.7);
+        }
+
+        .bottom-bar-top-actions {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          flex-shrink: 0;
+        }
+
+        .bottom-bar-input-row {
+          display: none;
+          align-items: center;
+          gap: 10px;
+          width: 100%;
+        }
+
+        .bottom-bar-input-row.visible {
+          display: flex;
+        }
+
+
+
+
 
         @keyframes bounce {
           0%, 100% { transform: translateY(0); }
